@@ -1,0 +1,187 @@
+"""
+Purpose of this script is to allow the automated delineation of watersheds from a Digital Elevation Model.
+The script tool makes use of several tools from the Spatial Analyst Hydrology toolset.
+This tool requires a Digital Elevation Model and a set of pour points (i.e. outlet of a watershed/catchment area)
+as a raster dataset. 
+"""
+
+#import necessary modules
+import arcpy
+from arcpy import sa
+from arcpy import env
+
+#set workspace and overwrite output
+arcpy.env.overwriteOutput = True
+#arcpy.env.workspace = arcpy.GetParameterAsText(0)
+arcpy.env.workspace = "C:/gis/gis540py"
+
+def printArc(message):
+    '''Prints in geoprocessing window and standard output.'''
+    print message
+    arcpy.AddMessage(message)
+
+#check for and then check out extensions
+if arcpy.CheckExtension("3D")=="Available":
+    arcpy.CheckOutExtension("3D")
+else:
+    printArc("Oops! You don't have that extension.")
+    print (arcpy.GetMessages())
+
+if arcpy.CheckExtension("Spatial")=="Available":
+    arcpy.CheckOutExtension("Spatial")
+else:
+    printArc("Oops! You don't have that extension.")
+    print (arcpy.GetMessages())
+
+#lasIN = arcpy.GetParameterAsText(1)
+lasIN = "C:/gis/gis540py/lidar"
+#lasDSET = arcpy.GetParameterAsText(2)
+lasDSET = "C:/gis/gis540py/lidar/main.lasd"
+Compute_Statistics = "true"
+
+Class_Codes = "2"
+
+#lasLyr = arcpy.GetParameterAsText(3)
+lasLyr = "main"
+#DEM = arcpy.GetParameterAsText(4)
+DEM = "C:/gis/gis540py/DEM/dem"
+cellSize = arcpy.GetParameterAsText(5)
+
+try:
+    for las in lasIN:
+        arcpy.CreateLasDataset_management(lasIN, lasDSET, "NO_RECURSION","","",Compute_Statistics, "ABSOLUTE_PATHS")
+except:
+    printArc("Oops! The las dataset tool failed to create the new file. Please try again.")
+
+try:
+    #for las in lasDSET:
+        arcpy.MakeLasDatasetLayer_management(lasDSET, lasLyr, Class_Codes)
+except:
+    printArc("Oops! The las dataset to layer tool failed to create the new file. Please try again.")
+    print (arcpy.GetMessages())
+   
+try:
+    #for las in lasLyr
+        arcpy.LasDatasetToRaster_conversion(lasLyr, DEM, "Elevation", "BINNING IDW LINEAR", "FLOAT", "CELLSIZE", "2", "1")
+except:
+    printArc("Oops! The las dataset to raster tool failed to create the new file. Please try again.")
+    print (arcpy.GetMessages())
+
+try:
+    arcpy.HillShade_3d(DEM, "C:/gis/gis540py/hillshade/hillshade.tif", "315", "45", "SHADOWS", "1")
+except:
+    printArc("Oops! The hillshade tool failed to create the new file. Please try again.")
+    print (arcpy.GetMessages())
+
+#read in original elevation file
+##originalDEM = arcpy.GetParameterAsText(1)
+printArc("Digital Elevation Model is located in: " + DEM+ "\n")
+
+"""Fill tool: this will be used to fill in areas of the DEM that are not true depressions.
+              A z-value may be specified by the user which will enhance user control
+              over what may be considered a true depression."""
+#read in fill options
+Fill = arcpy.GetParameterAsText(6)       #enter true
+zValue = arcpy.GetParameterAsText(7)        #enter z value
+#if zValue given by user, change to integer
+if not zValue == "":
+    zValue = int(zValue)
+if Fill != "false":
+    printArc("Filling DEM\n")
+    #Conditional check to see if user gave a z-value. If given, use the value.
+    if zValue != "":
+        outFill = sa.Fill(DEM,zValue)
+    else:
+        outFill = sa.Fill(DEM)
+else:
+    arcpy.AddMessage("Okay...The DEM will not be filled.\n")
+#this line is necessary to save the raster 
+outFill.save('DEM_Fill')
+
+#run flow direction tool and save file
+#flowDir = arcpy.GetParameterAsText(8)
+flowDir = "C:/gis/gis540py/flowDir"
+printArc("Running Flow Direction Tool\n")
+
+if flowDir != "" and Fill == "true":             
+    outFlowDir = sa.FlowDirection(outFill,"NORMAL",flowDir)
+elif flowDir != "":
+    outFlowDir = sa.FlowDirection(DEM,flowDir)
+elif Fill == "true":
+    outFlowDir = sa.FlowDirection(outFill)
+else:
+    outFlowDir = sa.FlowDirection(DEM)
+    
+outFlowDir.save('DEM_FlowDir')
+
+#run flow accumulation tool and save raster
+#dataType = arcpy.GetParameterAsText(9)
+dataType = "FLOAT"
+printArc("Running Flow Accumulation Tool\n")
+
+if dataType != "":
+    outFlowAcc = sa.FlowAccumulation(outFlowDir,"",dataType)
+else:
+    outFlowAcc = sa.FlowAccumulation(outFlowDir)
+
+outFlowAcc.save('DEM_FlowAcc')
+
+#Create the stream network and save file
+strmThresh = arcpy.GetParameterAsText(10)
+printArc("Running Conditional statement to build stream network\n")
+if strmThresh == "":
+    strmThresh = "2000"
+strmNtwk=sa.Con(outFlowAcc,1,"","Value > "+strmThresh,)
+strmNtwk.save("strm_Ntwk")
+
+#run stream link tool and save file
+printArc("Running Stream Link Tool\n")
+strmLnk = sa.StreamLink(strmNtwk,outFlowDir)
+strmLnk.save("strm_Lnk")
+
+#run stream order tool and save file
+strmMeth = arcpy.GetParameterAsText(11)
+printArc("Running Stream Order Tool\n")
+if strmMeth == "":
+    strmMeth = "STRAHLER"
+strmOrd = sa.StreamOrder(strmNtwk,outFlowDir,strmMeth)
+strmOrd.save("stream_Order")
+
+#run streams to feature tool
+printArc("Changing Streams to Features\n")
+strms = arcpy.GetParameterAsText(12)
+strms = "C:/gis/gis540py/strms"
+##if simple =="true":
+##    simple = "SIMPLIFY"
+##else:
+simple = "NO_SIMPLIFY"
+sa.StreamToFeature(strmNtwk,outFlowDir,strms,simple)
+
+
+printArc ("Converting stream rasters to vectors.")
+vecStrms = arcpy.GetParameterAsText(14)
+vecStrms = "C:/gis/gis540py/vecStrms"
+sa.StreamToFeature(strmOrd,outFlowDir,vecStrms,simple)
+
+#Run Basin tool and save file
+printArc("Generating the basin grid\n")
+basin = sa.Basin(outFlowDir)
+basin.save("basin")
+
+#Run Snap Pour Point tool and save file
+printArc("Running Snap Pour Point tool\n")
+pPoints = arcpy.GetParameterAsText(14)
+tolerate = arcpy.GetParameterAsText(15)
+if not tolerate == "":
+    tolerate = int(tolerate)
+
+#set env settings so union of inputs are used
+env.extent = "MAXOF"
+
+snpPt = sa.SnapPourPoint(pPoints,outFlowAcc,tolerate,"VALUE")
+snpPt.save("SnapPourPts")
+
+#call watershed tool and save file
+printArc("Running Watershed tool\n")
+wtrShed = sa.Watershed(outFlowDir,snpPt)
+wtrShed.save("Watershed")
